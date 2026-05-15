@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet">
+<script src="https://res.cdn.office.net/teams-js/2.24.0/js/MicrosoftTeams.min.js"></script>
 <style>
   :root {
     --bg: #F4EFE6;
@@ -65,6 +66,12 @@
     outline: none; font-weight: 500;
   }
   .name-box input::placeholder { color: var(--text-muted); }
+  .name-box .auto {
+    font-size: 11px; color: var(--text-muted);
+    background: var(--bg); padding: 3px 8px;
+    border-radius: 4px; font-weight: 500;
+    letter-spacing: 0.03em; text-transform: uppercase;
+  }
   .name-prompt {
     background: #FFF3D6; border: 1px solid #EBD9A0;
     color: #6E5520; border-radius: 10px;
@@ -187,6 +194,7 @@
     <div class="name-box">
       <label for="name">You are</label>
       <input type="text" id="name" placeholder="your name (e.g. Edvard M)" autocomplete="off" spellcheck="false">
+      <span id="auto-badge" class="auto" style="display:none;">from Teams</span>
     </div>
     <div id="name-prompt" class="name-prompt">
       Pop your name in above first, then you can mark your days.
@@ -201,13 +209,13 @@
 // ============================================================
 // SETUP - paste your Cloudflare Worker URL here, save, upload.
 // ============================================================
-const WORKER_URL = "https://tine-office-days.edvardmytteis.workers.dev";
-// Example: "https://tine-office-days.edvard.workers.dev"
+const WORKER_URL = "https://tine-office-days.edvardmytteis.workers.dev/";
 // ============================================================
 
 let username = '';
 let attendance = {};
 let saving = false;
+let identityFromTeams = false;
 
 const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
@@ -216,6 +224,32 @@ function dateKey(d) {
   return d.getFullYear() + '-' +
     String(d.getMonth()+1).padStart(2,'0') + '-' +
     String(d.getDate()).padStart(2,'0');
+}
+
+function formatTeamsName(displayName) {
+  if (!displayName) return '';
+  const parts = displayName.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0];
+  // Handle "Last, First" format (common in AD)
+  if (parts[0].endsWith(',')) {
+    const first = parts[1] || '';
+    const lastInitial = parts[0].replace(',','').charAt(0).toUpperCase();
+    return first + ' ' + lastInitial;
+  }
+  const first = parts[0];
+  const lastInitial = parts[parts.length - 1].charAt(0).toUpperCase();
+  return first + ' ' + lastInitial;
+}
+
+async function initTeamsIdentity() {
+  if (typeof microsoftTeams === 'undefined') return null;
+  try {
+    await microsoftTeams.app.initialize();
+    const ctx = await microsoftTeams.app.getContext();
+    const displayName = ctx && ctx.user && ctx.user.displayName;
+    if (displayName) return formatTeamsName(displayName);
+  } catch (e) { /* not running inside Teams */ }
+  return null;
 }
 
 function getDaysToShow() {
@@ -264,7 +298,6 @@ function setStatus(state, text) {
   document.getElementById('status-text').textContent = text;
 }
 
-// ---------- Worker storage ----------
 async function fetchAttendance() {
   if (!WORKER_URL || WORKER_URL.startsWith('PASTE')) return null;
   try {
@@ -403,6 +436,7 @@ function render() {
 
 let nameDebounce;
 document.getElementById('name').addEventListener('input', (e) => {
+  if (identityFromTeams) return;
   clearTimeout(nameDebounce);
   const v = e.target.value.trim();
   nameDebounce = setTimeout(() => {
@@ -421,8 +455,19 @@ async function boot() {
     return;
   }
 
-  username = loadStoredName();
-  document.getElementById('name').value = username;
+  // Try Teams first; fallback to manual name
+  const teamsName = await initTeamsIdentity();
+  const input = document.getElementById('name');
+  if (teamsName) {
+    username = teamsName;
+    identityFromTeams = true;
+    input.value = teamsName;
+    input.readOnly = true;
+    document.getElementById('auto-badge').style.display = 'inline-block';
+  } else {
+    username = loadStoredName();
+    input.value = username;
+  }
 
   const remote = await fetchAttendance();
   attendance = remote || {};
